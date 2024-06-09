@@ -45,6 +45,12 @@ class Shape(object):
     point_size = 8
     scale = 1.0
 
+    # members for 'stereobbox' type shape
+    leftPoints = None
+    leftKeyPoints = None
+    rightPoints = None
+    isForRecord = None  # whether is only for recording labeling or temperary displaying measuring line. E.g. self.current in canvas.py is for record use, while self.line is not.
+
     def __init__(
         self,
         label=None,
@@ -53,10 +59,21 @@ class Shape(object):
         flags=None,
         group_id=None,
         description=None,
+        isForRecord=True
     ):
         self.label = label
         self.group_id = group_id
         self.points = []
+
+        # for 'stereobbox' type
+        self.leftPoints = []
+        self.rightPoints = []
+        self.leftKeyPoints = {
+            'keypt1': None,
+            'keypt2': None
+        }
+        self.isForRecord = isForRecord
+
         self.fill = False
         self.selected = False
         self.shape_type = shape_type
@@ -80,6 +97,20 @@ class Shape(object):
             self.line_color = line_color
 
         self.shape_type = shape_type
+    
+    def isDrawSubshape(self):
+        if self.shape_type != 'stereobbox':
+            return self.shape_type
+        else:
+            if self.leftKeyPoints['keypt2'] is not None and len(self.rightPoints) == 0:
+                returnType = "line"
+            elif len(self.rightPoints) > 0:
+                returnType = "rectangle"
+            elif len(self.leftPoints) > 0:
+                returnType = "rectangle"
+            else:
+                returnType = "stereobbox"
+            return returnType
 
     @property
     def shape_type(self):
@@ -92,6 +123,7 @@ class Shape(object):
         if value not in [
             "polygon",
             "rectangle",
+            "stereobbox",
             "point",
             "line",
             "circle",
@@ -108,6 +140,8 @@ class Shape(object):
             self.close()
         else:
             self.points.append(point)
+        if self.shape_type == "stereobbox":
+            self.leftPoints.append(point)
 
     def canAddPoint(self):
         return self.shape_type in ["polygon", "linestrip"]
@@ -189,6 +223,12 @@ class Shape(object):
                 for i, p in enumerate(self.points):
                     line_path.lineTo(p)
                     self.drawVertex(vrtx_path, i)
+            elif self.shape_type == "stereobbox" and self.isForRecord and len(self.leftPoints) == 2 and len(self.rightPoints) == 2:
+                # Note: only for displaying history labels
+                rectangle = self.getRectFromLine(*self.leftPoints)
+                line_path.addRect(rectangle)
+                for i in range(len(self.leftPoints)):
+                    self.drawVertex2(vrtx_path, self.leftPoints[i])
             else:
                 line_path.moveTo(self.points[0])
                 # Uncommenting the following line will draw 2 paths
@@ -230,6 +270,11 @@ class Shape(object):
             path.addEllipse(point, d / 2.0, d / 2.0)
         else:
             assert False, "unsupported vertex shape"
+
+    def drawVertex2(self, path, point):
+        d = self.point_size / self.scale
+        self._vertex_fill_color = self.vertex_fill_color
+        path.addEllipse(point, d / 2.0, d / 2.0)
 
     def nearestVertex(self, point, epsilon):
         min_distance = float("inf")

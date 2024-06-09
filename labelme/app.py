@@ -48,6 +48,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = 0, 1, 2
 
+    # ============  stereo image labeling feature =============
+    stereoRightDirPath = None  # the path to find the stereo right image
+    labelListBackup = None  # temperary save the labelList.
+
     def __init__(
         self,
         config=None,
@@ -233,6 +237,22 @@ class MainWindow(QtWidgets.QMainWindow):
             "open",
             self.tr("Open Dir"),
         )
+        openStereoRightImg = action(
+            self.tr("&Stereo Right Image"),
+            self.openStereoRightImg,
+            shortcuts["open_stereo_right"],
+            "open_stereo_right",
+            self.tr("Open stereo right image"),
+            enabled=False,
+        )
+        returnToStereoLeftImg = action(
+            self.tr("&Stereo left Image"),
+            self.returnToStereoLeftImg,
+            shortcuts["return_to_stereo_left"],
+            "return_to_stereo_left",
+            self.tr(" return to stereo left image"),
+            enabled=False,
+        )
         openNextImg = action(
             self.tr("&Next Image"),
             self.openNextImg,
@@ -333,6 +353,14 @@ class MainWindow(QtWidgets.QMainWindow):
             shortcuts["create_rectangle"],
             "objects",
             self.tr("Start drawing rectangles"),
+            enabled=False,
+        )
+        createStereoBboxMode = action(
+            self.tr("Create Stereo Bbox"),
+            lambda: self.toggleDrawMode(False, createMode="stereobbox"),
+            shortcuts["create_stereobbox"],
+            "objects",
+            self.tr("Start drawing stereo bbox"),
             enabled=False,
         )
         createCircleMode = action(
@@ -599,6 +627,7 @@ class MainWindow(QtWidgets.QMainWindow):
             createMode=createMode,
             editMode=editMode,
             createRectangleMode=createRectangleMode,
+            createStereoBboxMode=createStereoBboxMode,
             createCircleMode=createCircleMode,
             createLineMode=createLineMode,
             createPointMode=createPointMode,
@@ -614,6 +643,8 @@ class MainWindow(QtWidgets.QMainWindow):
             zoomActions=zoomActions,
             openNextImg=openNextImg,
             openPrevImg=openPrevImg,
+            openStereoRightImg=openStereoRightImg,
+            returnToStereoLeftImg=returnToStereoLeftImg,
             fileMenuActions=(open_, opendir, save, saveAs, close, quit),
             tool=(),
             # XXX: need to add some actions here to activate the shortcut
@@ -633,6 +664,7 @@ class MainWindow(QtWidgets.QMainWindow):
             menu=(
                 createMode,
                 createRectangleMode,
+                createStereoBboxMode,
                 createCircleMode,
                 createLineMode,
                 createPointMode,
@@ -651,6 +683,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 close,
                 createMode,
                 createRectangleMode,
+                createStereoBboxMode,
                 createCircleMode,
                 createLineMode,
                 createPointMode,
@@ -678,6 +711,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 open_,
                 openNextImg,
                 openPrevImg,
+                openStereoRightImg,
+                returnToStereoLeftImg,
                 opendir,
                 self.menus.recentFiles,
                 save,
@@ -736,6 +771,8 @@ class MainWindow(QtWidgets.QMainWindow):
             opendir,
             openNextImg,
             openPrevImg,
+            openStereoRightImg,
+            returnToStereoLeftImg,
             save,
             deleteFile,
             None,
@@ -848,6 +885,7 @@ class MainWindow(QtWidgets.QMainWindow):
         actions = (
             self.actions.createMode,
             self.actions.createRectangleMode,
+            self.actions.createStereoBboxMode,
             self.actions.createCircleMode,
             self.actions.createLineMode,
             self.actions.createPointMode,
@@ -879,6 +917,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actions.save.setEnabled(False)
         self.actions.createMode.setEnabled(True)
         self.actions.createRectangleMode.setEnabled(True)
+        self.actions.createStereoBboxMode.setEnabled(True)
         self.actions.createCircleMode.setEnabled(True)
         self.actions.createLineMode.setEnabled(True)
         self.actions.createPointMode.setEnabled(True)
@@ -956,6 +995,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if edit:
             self.actions.createMode.setEnabled(True)
             self.actions.createRectangleMode.setEnabled(True)
+            self.actions.createStereoBboxMode.setEnabled(True)
             self.actions.createCircleMode.setEnabled(True)
             self.actions.createLineMode.setEnabled(True)
             self.actions.createPointMode.setEnabled(True)
@@ -971,6 +1011,14 @@ class MainWindow(QtWidgets.QMainWindow):
             elif createMode == "rectangle":
                 self.actions.createMode.setEnabled(True)
                 self.actions.createRectangleMode.setEnabled(False)
+                self.actions.createCircleMode.setEnabled(True)
+                self.actions.createLineMode.setEnabled(True)
+                self.actions.createPointMode.setEnabled(True)
+                self.actions.createLineStripMode.setEnabled(True)
+            elif createMode == "stereobbox":
+                self.actions.createMode.setEnabled(True)
+                self.actions.createRectangleMode.setEnabled(True)
+                self.actions.createStereoBboxMode.setEnabled(False)
                 self.actions.createCircleMode.setEnabled(True)
                 self.actions.createLineMode.setEnabled(True)
                 self.actions.createPointMode.setEnabled(True)
@@ -1250,16 +1298,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def format_shape(s):
             data = s.other_data.copy()
-            data.update(
-                dict(
-                    label=s.label.encode("utf-8") if PY2 else s.label,
-                    points=[(p.x(), p.y()) for p in s.points],
-                    group_id=s.group_id,
-                    description=s.description,
-                    shape_type=s.shape_type,
-                    flags=s.flags,
-                )
+            dataContent = dict(
+                label=s.label.encode("utf-8") if PY2 else s.label,
+                points=[(p.x(), p.y()) for p in s.points],
+                group_id=s.group_id,
+                description=s.description,
+                shape_type=s.shape_type,
+                flags=s.flags,
             )
+            if s.shape_type == "stereobbox":
+                dataContent["leftPoints"] = [(p.x(), p.y()) for p in s.leftPoints]
+                dataContent["rightPoints"] = [(p.x(), p.y()) for p in s.rightPoints]
+                dataContent["keypt1"] = (s.leftKeyPoints["keypt1"].x(), s.leftKeyPoints["keypt1"].y())
+                dataContent["keypt2"] = [(p.x(), p.y()) for p in s.leftKeyPoints["keypt2"]]
+            data.update(dataContent)
             return data
 
         shapes = [format_shape(item.shape()) for item in self.labelList]
@@ -1730,11 +1782,105 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 filename = self.imageList[-1]
         self.filename = filename
-
         if self.filename and load:
             self.loadFile(self.filename)
 
         self._config["keep_prev"] = keep_prev
+
+    def openStereoRightImg(self, value=False):
+        # ===================
+        # if stereo path is None, open dir dialog to select stereo path.
+        # ===================
+        if self.stereoRightDirPath is None:
+            if self.lastOpenDir and osp.exists(self.lastOpenDir):
+                defaultOpenDirPath = self.lastOpenDir
+            else:
+                defaultOpenDirPath = (
+                    osp.dirname(self.filename) if self.filename else "."
+                )
+
+            self.stereoRightDirPath = str(
+                QtWidgets.QFileDialog.getExistingDirectory(
+                    self,
+                    self.tr("%s - Open Directory") % __appname__,
+                    defaultOpenDirPath,
+                    QtWidgets.QFileDialog.ShowDirsOnly
+                    | QtWidgets.QFileDialog.DontResolveSymlinks,
+                )
+            )
+        # ===================
+        # open the image from corresponding name in the stereo path
+        # ===================
+        stereoRightFilename = os.path.join(self.stereoRightDirPath, os.path.basename(self.filename))
+        stereRightImageData = LabelFile.load_image_file(stereoRightFilename)
+        image = QtGui.QImage.fromData(stereRightImageData)
+        self.changeDisplayImage(image, stereoRightFilename)
+        # ===================
+        # restrict y and h, start selecting bbox in stereo image
+        # ===================
+        self.actions.returnToStereoLeftImg.setEnabled(True)
+        self.actions.openStereoRightImg.setEnabled(False)
+        self.canvas.state_register["select_stereo_right_bbox"] = True  # Note: signal to start selecting stereo right bbox.
+        return
+
+    def returnToStereoLeftImg(self, value=False):
+        self.changeDisplayImage(self.image, self.filename)
+        self.canvas.loadShapes([item.shape() for item in self.labelList])
+        self.canvas.state_register["select_stereo_right_bbox"] = False
+        self.actions.openStereoRightImg.setEnabled(True)
+        self.actions.returnToStereoLeftImg.setEnabled(False)
+        return
+
+    def changeDisplayImage(self, image, imageFilename):
+        if image.isNull():
+            self.errorMessage(
+                "Error:\n",
+                self.tr("error displaying null image: {}".format(imageFilename))
+            )
+            return
+        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        flags = {k: False for k in self._config["flags"] or []}
+        self.canvas.setEnabled(True)
+        # set zoom values
+        is_initial_load = not self.zoom_values
+        if self.filename in self.zoom_values:
+            self.zoomMode = self.zoom_values[self.filename][0]
+            self.setZoom(self.zoom_values[self.filename][1])
+        elif is_initial_load or not self._config["keep_prev_scale"]:
+            self.adjustScale(initial=True)
+        # set scroll values
+        for orientation in self.scroll_values:
+            if self.filename in self.scroll_values[orientation]:
+                self.setScroll(
+                    orientation, self.scroll_values[orientation][self.filename]
+                )
+        # set brightness contrast values
+        dialog = BrightnessContrastDialog(
+            utils.img_data_to_pil(self.imageData),
+            self.onNewBrightnessContrast,
+            parent=self,
+        )
+        brightness, contrast = self.brightnessContrast_values.get(
+            self.filename, (None, None)
+        )
+        if self._config["keep_prev_brightness"] and self.recentFiles:
+            brightness, _ = self.brightnessContrast_values.get(
+                self.recentFiles[0], (None, None)
+            )
+        if self._config["keep_prev_contrast"] and self.recentFiles:
+            _, contrast = self.brightnessContrast_values.get(
+                self.recentFiles[0], (None, None)
+            )
+        if brightness is not None:
+            dialog.slider_brightness.setValue(brightness)
+        if contrast is not None:
+            dialog.slider_contrast.setValue(contrast)
+        self.brightnessContrast_values[self.filename] = (brightness, contrast)
+        if brightness is not None or contrast is not None:
+            dialog.onNewValue(None)
+        self.paintCanvas()
+        self.toggleActions(True)
+        self.canvas.setFocus()
 
     def openFile(self, _value=False):
         if not self.mayContinue():
@@ -2035,11 +2181,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if len(self.imageList) > 1:
             self.actions.openNextImg.setEnabled(True)
             self.actions.openPrevImg.setEnabled(True)
+            self.actions.openStereoRightImg.setEnabled(True)
 
         self.openNextImg()
 
     def importDirImages(self, dirpath, pattern=None, load=True):
         self.actions.openNextImg.setEnabled(True)
+        self.actions.openStereoRightImg.setEnabled(True)
         self.actions.openPrevImg.setEnabled(True)
 
         if not self.mayContinue() or not dirpath:

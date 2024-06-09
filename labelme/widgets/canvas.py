@@ -1,6 +1,7 @@
 from qtpy import QtCore
 from qtpy import QtGui
 from qtpy import QtWidgets
+import copy
 
 from labelme import QT5
 from labelme.shape import Shape
@@ -30,6 +31,9 @@ class Canvas(QtWidgets.QWidget):
     drawingPolygon = QtCore.Signal(bool)
     vertexSelected = QtCore.Signal(bool)
 
+    # a simple register. By pressing certain key on the keyboard, to change the state of certain logic, e.g. start selecting keypoints in stereobbox.
+    state_register = None
+
     CREATE, EDIT = 0, 1
 
     # polygon, rectangle, line, or point
@@ -51,6 +55,7 @@ class Canvas(QtWidgets.QWidget):
             "crosshair",
             {
                 "polygon": False,
+                "stereobbox": True,
                 "rectangle": True,
                 "circle": False,
                 "line": False,
@@ -58,6 +63,11 @@ class Canvas(QtWidgets.QWidget):
                 "linestrip": False,
             },
         )
+        self.state_register = {
+            "select_keypt1_in_stereobbox": False,
+            "select_keypt2_in_stereobbox": False,
+            "select_stereo_right_bbox": False
+        }
         super(Canvas, self).__init__(*args, **kwargs)
         # Initialise local state.
         self.mode = self.EDIT
@@ -71,7 +81,7 @@ class Canvas(QtWidgets.QWidget):
         #   - createMode == 'rectangle': diagonal line of the rectangle
         #   - createMode == 'line': the line
         #   - createMode == 'point': the point
-        self.line = Shape()
+        self.line = Shape(isForRecord=False)
         self.prevPoint = QtCore.QPoint()
         self.prevMovePoint = QtCore.QPoint()
         self.offsets = QtCore.QPoint(), QtCore.QPoint()
@@ -114,6 +124,7 @@ class Canvas(QtWidgets.QWidget):
         if value not in [
             "polygon",
             "rectangle",
+            "stereobbox",
             "circle",
             "line",
             "point",
@@ -243,6 +254,13 @@ class Canvas(QtWidgets.QWidget):
             elif self.createMode == "rectangle":
                 self.line.points = [self.current[0], pos]
                 self.line.close()
+            elif self.createMode == "stereobbox":
+                if self.current.isDrawSubshape() == "rectangle":
+                    self.line.shape_type = 'rectangle'
+                elif self.current.isDrawSubshape() == "line":
+                    self.line.shape_type = 'line'
+                self.line.points = [self.current[0], pos]
+                self.line.close()
             elif self.createMode == "circle":
                 self.line.points = [self.current[0], pos]
                 self.line.shape_type = "circle"
@@ -360,6 +378,15 @@ class Canvas(QtWidgets.QWidget):
         self.prevhVertex = None
         self.movingShape = True  # Save changes
 
+    def commitOneSubshape(self, subshape):
+        subshape.close()
+        self.setShapeVisible(subshape, True)
+        self.shapes.append(subshape)
+        self.storeShapes()
+        subshape = None
+        self.setHiding(False)
+        self.update()
+
     def mousePressEvent(self, ev):
         if QT5:
             pos = self.transformPos(ev.localPos())
@@ -367,7 +394,7 @@ class Canvas(QtWidgets.QWidget):
             pos = self.transformPos(ev.posF())
         if ev.button() == QtCore.Qt.LeftButton:
             if self.drawing():
-                if self.current:
+                if self.current is not None:
                     # Add point to existing shape.
                     if self.createMode == "polygon":
                         self.current.addPoint(self.line[1])
@@ -383,6 +410,67 @@ class Canvas(QtWidgets.QWidget):
                         self.line[0] = self.current[-1]
                         if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
                             self.finalise()
+                    elif self.createMode == "stereobbox":
+                        if self.state_register["select_stereo_right_bbox"]:
+                            if len(self.current.rightPoints) == 1:
+                                self.current.rightPoints.append(pos)
+                                self.line.points.append(pos)
+                                self.current.points.append(pos)
+                                print("added right bbox")
+                                self.finaliseStereobbox()
+                                print("created stereobbox.")
+                                print("---------------------------")
+                            elif len(self.current.rightPoints) == 0:
+                                self.current.rightPoints.append(pos)
+                                self.line.points.append(pos)
+                                self.current.points.append(pos)
+                                self.line.shape_type = "rectangle"
+                        elif (not self.state_register["select_stereo_right_bbox"]) and (self.state_register["select_keypt1_in_stereobbox"]):
+                            self.current.leftKeyPoints['keypt1'] = pos
+                            subshape = Shape(isForRecord=False)
+                            subshape.shape_type = 'point'
+                            subshape.points.append(pos)
+                            self.commitOneSubshape(subshape)
+                            print("added keypt1.")
+                            self.current.points = []
+                            self.current.leftKeyPoints['keypt2'] = []
+                            self.line.points =[]
+                            self.line.setOpen()
+                        elif (not self.state_register["select_stereo_right_bbox"]) and (self.state_register["select_keypt2_in_stereobbox"]):
+                            # follow the way of creating a line for keypt2
+                            self.line.shape_type = 'line'
+                            if self.current.leftKeyPoints['keypt2'] is None or (len(self.current.leftKeyPoints['keypt2']) == 0):
+                                # create list for keypt2 entry if not existing
+                                self.current.leftKeyPoints['keypt2'] = []
+                                self.line.points.append(pos)
+                                self.current.leftKeyPoints['keypt2'].append(pos)
+                                self.current.points.append(pos)
+                            else:
+                                assert(len(self.current.leftKeyPoints['keypt2']) == 1)
+                                self.line.points.append(pos)
+                                self.current.leftKeyPoints['keypt2'].append(pos)
+                                subshape = copy.deepcopy(self.line)
+                                subshape.shape_type = "line"
+                                self.commitOneSubshape(subshape)
+                                print("added keypt2")
+                                self.line.points = []
+                                self.current.points = []
+                                self.line.setOpen()
+                        else:
+                            if len(self.current.leftPoints) == 1:
+                                self.current.leftPoints.append(pos)
+                                subshape = copy.deepcopy(self.line)
+                                subshape.shape_type = "rectangle"
+                                self.commitOneSubshape(subshape)
+                                print("added left bbox")
+                                self.line.points = []
+                                self.current.points = []
+                                self.line.setOpen()
+                            elif len(self.current.leftPoints) == 0:
+                                self.current.leftPoints.append(pos)
+                                self.line.shape_type = "rectangle"
+                            else:
+                                pass
                 elif not self.outOfPixmap(pos):
                     # Create new shape.
                     self.current = Shape(shape_type=self.createMode)
@@ -392,6 +480,15 @@ class Canvas(QtWidgets.QWidget):
                     else:
                         if self.createMode == "circle":
                             self.current.shape_type = "circle"
+                        if self.createMode == "stereobbox":
+                            if self.state_register["select_stereo_right_bbox"]:
+                                self.line.shape_type = "rectangle"
+                            elif (not self.state_register["select_stereo_right_bbox"]) and (self.state_register["select_keypt1_in_stereobbox"]):
+                                self.line.shape_type = "point"
+                            elif (not self.state_register["select_stereo_right_bbox"]) and (self.state_register["select_keypt2_in_stereobbox"]):
+                                self.line.shape_type = "line"
+                            else:
+                                self.line.shape_type = "rectangle"
                         self.line.points = [pos, pos]
                         self.setHiding()
                         self.drawingPolygon.emit(True)
@@ -709,6 +806,16 @@ class Canvas(QtWidgets.QWidget):
         self.newShape.emit()
         self.update()
 
+    def finaliseStereobbox(self):
+        self.current.points = self.current.leftPoints  # Note: show the left bbox in history
+        self.current.close()
+        self.shapes.append(self.current)
+        self.storeShapes()
+        self.current = None
+        self.line = Shape(isForRecord=False)
+        self.setHiding(False)
+        self.newShape.emit()
+
     def closeEnough(self, p1, p2):
         # d = distance(p1 - p2)
         # m = (p1-p2).manhattanLength()
@@ -840,6 +947,12 @@ class Canvas(QtWidgets.QWidget):
             elif key == QtCore.Qt.Key_Right:
                 self.moveByKeyboard(QtCore.QPointF(MOVE_SPEED, 0.0))
 
+        # set state register
+        if key == QtCore.Qt.Key_F:
+            self.state_register["select_keypt1_in_stereobbox"] = True
+        elif key == QtCore.Qt.Key_S:
+            self.state_register["select_keypt2_in_stereobbox"] = True
+
     def keyReleaseEvent(self, ev):
         modifiers = ev.modifiers()
         if self.drawing():
@@ -856,6 +969,13 @@ class Canvas(QtWidgets.QWidget):
                     self.shapeMoved.emit()
 
                 self.movingShape = False
+
+        # reset state register
+        key = ev.key()
+        if key == QtCore.Qt.Key_F:
+            self.state_register["select_keypt1_in_stereobbox"] = False
+        elif key == QtCore.Qt.Key_S:
+            self.state_register["select_keypt2_in_stereobbox"] = False
 
     def setLastLabel(self, text, flags):
         assert text
